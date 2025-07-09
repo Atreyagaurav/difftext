@@ -26,7 +26,7 @@ impl<'a> Replacer for LatexCmd<'a> {
                     .filter_map(|c| self.map.get(c))
                     .map(|(a, y)| format!("{a} ({y})"))
                     .collect::<Vec<String>>()
-                    .join(",");
+                    .join(", ");
                 dst.push_str(&format!("({text})"));
             }
             "citep" => {
@@ -35,7 +35,7 @@ impl<'a> Replacer for LatexCmd<'a> {
                     .filter_map(|c| self.map.get(c))
                     .map(|(a, y)| format!("{a}, {y}"))
                     .collect::<Vec<String>>()
-                    .join(";");
+                    .join("; ");
                 dst.push_str(&format!("({text})"));
             }
             "texttt" => {
