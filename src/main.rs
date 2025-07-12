@@ -41,6 +41,9 @@ impl<'a> Replacer for LatexCmd<'a> {
             "texttt" => {
                 dst.push_str(&format!("`{entry}`"));
             }
+            "url" => {
+                dst.push_str(&format!("#link(\"{entry}\")"));
+            }
             cmd => {
                 // unknown commands will be translated as typst
                 // commands, can just add functions in typst to make
