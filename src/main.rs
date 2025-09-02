@@ -1,15 +1,108 @@
+use clap::CommandFactory;
+use clap::Parser;
 use colored::Colorize;
 use difference::{Changeset, Difference};
 use regex::{Captures, Regex, Replacer};
 use std::collections::HashMap;
+use std::path::PathBuf;
+
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+struct Cli {
+    /// replace newline with space
+    #[arg(short, long)]
+    lines: bool,
+    /// do not detect/replace latex commands
+    #[arg(short, long)]
+    keep_latex: bool,
+    // /// deletion
+    // #[arg(short, long, value_name = "PATTERN", default_value = "#rem[\\1]")]
+    // deletion: String,
+    // /// addition
+    // #[arg(short, long, value_name = "PATTERN", default_value = "#add[\\1]")]
+    // addition: String,
+    /// old file
+    old_file: Option<PathBuf>,
+    /// new file
+    new_file: Option<PathBuf>,
+    /// aux file
+    aux_file: Option<PathBuf>,
+}
+
+fn main() {
+    let args = Cli::parse();
+    match (args.old_file, args.new_file, args.aux_file) {
+        (Some(old), Some(new), aux) => {
+            let old = std::fs::read_to_string(old).unwrap();
+            let new = std::fs::read_to_string(new).unwrap();
+            let old_map = text_labels(&old);
+            let new_map = text_labels(&new);
+            let mut buf = String::with_capacity(200);
+            let (citations, references) = if let Some(aux) = aux {
+                let aux_contents = std::fs::read_to_string(aux).unwrap();
+                (cite_label(&aux_contents), ref_label(&aux_contents))
+            } else {
+                (HashMap::new(), HashMap::new())
+            };
+            // println!("{citations:#?}");
+            let pat = LatexCmd::pattern();
+            loop {
+                println!("** Label:");
+                buf.clear();
+                std::io::stdin().read_line(&mut buf).unwrap();
+                let label = buf.trim();
+                let difftext = match (old_map.get(label), new_map.get(label)) {
+                    (Some(o), Some(n)) => get_diff(o, n, args.lines),
+                    (Some(o), None) => format!(
+                        "#rem[{}]",
+                        if args.lines {
+                            o.replace("\n", " ").blue()
+                        } else {
+                            o.blue()
+                        }
+                    ),
+                    (None, Some(n)) => format!(
+                        "#add[{}]",
+                        if args.lines {
+                            n.replace("\n", " ").blue()
+                        } else {
+                            n.blue()
+                        }
+                    ),
+                    (None, None) => {
+                        println!("Label not found in both text");
+                        continue;
+                    }
+                };
+
+                if args.keep_latex {
+                    println!("{}", difftext)
+                } else {
+                    println!(
+                        "{}",
+                        pat.replace_all(&difftext, LatexCmd::new(&citations, &references))
+                    )
+                }
+            }
+        }
+        (None, None, None) => repl(args.lines),
+        _ => {
+            _ = Cli::command().print_help();
+        }
+    }
+}
 
 struct LatexCmd<'a> {
-    map: &'a HashMap<String, (String, String)>,
+    cite_map: &'a HashMap<String, (String, String)>,
+    ref_map: &'a HashMap<String, String>,
 }
 
 impl<'a> LatexCmd<'a> {
-    fn new(map: &'a HashMap<String, (String, String)>) -> Self {
-        Self { map }
+    fn new(
+        cite_map: &'a HashMap<String, (String, String)>,
+        ref_map: &'a HashMap<String, String>,
+    ) -> Self {
+        Self { cite_map, ref_map }
     }
     fn pattern() -> Regex {
         regex::Regex::new("\\\\(?<t>\\w+)\\{(?<entry>.+?)\\}").unwrap()
@@ -20,11 +113,19 @@ impl<'a> Replacer for LatexCmd<'a> {
     fn replace_append(&mut self, caps: &Captures<'_>, dst: &mut String) {
         let entry: &str = &caps["entry"];
         match &caps["t"] {
+            "ref" => {
+                let text = self.ref_map.get(entry).map(|n| n.as_str()).unwrap_or(entry);
+                dst.push_str(text);
+            }
             "cite" => {
                 let text = entry
                     .split(',')
-                    .filter_map(|c| self.map.get(c))
-                    .map(|(a, y)| format!("{a} ({y})"))
+                    .map(|c| {
+                        self.cite_map
+                            .get(c)
+                            .map(|(a, y)| format!("{a} ({y})"))
+                            .unwrap_or(c.to_string())
+                    })
                     .collect::<Vec<String>>()
                     .join(", ");
                 dst.push_str(&format!("({text})"));
@@ -32,8 +133,12 @@ impl<'a> Replacer for LatexCmd<'a> {
             "citep" => {
                 let text = entry
                     .split(',')
-                    .filter_map(|c| self.map.get(c))
-                    .map(|(a, y)| format!("{a}, {y}"))
+                    .map(|c| {
+                        self.cite_map
+                            .get(c)
+                            .map(|(a, y)| format!("{a}, {y}"))
+                            .unwrap_or(c.to_string())
+                    })
                     .collect::<Vec<String>>()
                     .join("; ");
                 dst.push_str(&format!("({text})"));
@@ -54,51 +159,25 @@ impl<'a> Replacer for LatexCmd<'a> {
     }
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    match args.as_slice() {
-        [_, old, new, aux @ ..] => {
-            let old = std::fs::read_to_string(old).unwrap();
-            let new = std::fs::read_to_string(new).unwrap();
-            let old_map = text_labels(&old);
-            let new_map = text_labels(&new);
-            let mut buf = String::with_capacity(200);
-            let citations = if let Some(aux) = aux.get(0) {
-                cite_label(&std::fs::read_to_string(aux).unwrap())
-            } else {
-                HashMap::new()
-            };
-            let lines = aux.contains(&"-l".to_string());
-            // println!("{citations:#?}");
-            let pat = LatexCmd::pattern();
-            loop {
-                println!("** Label:");
-                buf.clear();
-                std::io::stdin().read_line(&mut buf).unwrap();
-                let label = buf.trim();
-                match (old_map.get(label), new_map.get(label)) {
-                    (Some(o), Some(n)) => {
-                        println!(
-                            "{}",
-                            pat.replace_all(&get_diff(o, n, lines), LatexCmd::new(&citations))
-                        )
-                    }
-                    (Some(_), None) => println!("Label not found in new text"),
-                    (None, Some(_)) => println!("Label not found in old text"),
-                    (None, None) => println!("Label not found in both text"),
-                }
-            }
-        }
-        [_, rest @ ..] => {
-            let lines = rest.contains(&"-l".to_string());
-            repl(lines)
-        }
-        _ => print_help(),
-    }
-}
-
-fn print_help() {
-    println!("Usage: difftext [old] [new] [aux]")
+fn ref_label(txt: &str) -> HashMap<String, String> {
+    // \newlabel{fig:ohio-map}{{7}{15}...
+    txt.lines()
+        .filter_map(|l| l.strip_prefix("\\newlabel{"))
+        .filter_map(|l| {
+            let mut data = l.split("}{");
+            let label = data
+                .next()?
+                .trim_start_matches('{')
+                .trim_end_matches('}')
+                .to_string();
+            let number = data
+                .next()?
+                .trim_start_matches('{')
+                .trim_end_matches('}')
+                .to_string();
+            Some((label, number))
+        })
+        .collect()
 }
 
 fn cite_label(txt: &str) -> HashMap<String, (String, String)> {
@@ -151,6 +230,7 @@ fn text_labels(txt: &str) -> HashMap<String, &str> {
 }
 
 fn repl(lines: bool) {
+    println!("Running in interactive mode");
     loop {
         println!("** Old text:");
         let old = std::io::read_to_string(std::io::stdin())
